@@ -1,0 +1,263 @@
+// Module included in the following assemblies:
+// * serverless-logic/serverless-logic-configuring-workflow-scaling.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-logic-configuring-workflow-scaling-and-disruption_{context}"]
+= Configuring workflow scaling and disruption protection
+
+[role="_abstract"]
+You can configure scaling for workflows and supporting services using the {ServerlessLogicOperatorName}. This includes manual scaling, horizontal pod autoscaling (HPA), and pod disruption budgets for production deployments.
+
+[id="workflow-scaling_{context}"]
+== Scaling a workflow
+
+The `SonataFlow` custom resource definition (CRD) exposes the Kubernetes `scale` subresource, which enables you to scale workflows using the standard Kubernetes API. You can scale workflows manually or automatically using Horizontal Pod Autoscalers.
+
+[NOTE]
+====
+Workflows deployed with the `dev` profile are intended for development purposes and are not designed to be scaled.
+====
+
+=== Querying the workflow scale subresource
+
+To query the workflow `scale` subresource, run the following command:
+
+[source,terminal,subs="+quotes"]
+----
+$ *kubectl get sonataflow _<workflow_name>_ -n _<namespace>_ --subresource=scale -o yaml*
+----
+
+.Example output
+[source,yaml]
+----
+apiVersion: autoscaling/v1
+kind: Scale
+metadata:
+  creationTimestamp: "2026-02-12T12:48:46Z"
+  name: example-workflow
+  namespace: example-workflow-namespace
+  resourceVersion: "38397"
+  uid: de53b549-dcb5-4b46-bb4e-9a576341e099
+spec:
+  replicas: 1
+status:
+  replicas: 1
+  selector: app=example-workflow,app.kubernetes.io/component=serverless-workflow,app.kubernetes.io/instance=example-workflow,app.kubernetes.io/managed-by=sonataflow-operator,app.kubernetes.io/name=example-workflow,app.kubernetes.io/version=main,sonataflow.org/workflow-app=example-workflow,sonataflow.org/workflow-namespace=example-workflow-namespace
+----
+
+The output shows the following information:
+
+* `spec.replicas` - Number of configured replicas.
+* `status.replicas` - Number of currently available replicas.
+* `selector` - Selector to query the observed pods.
+
+=== Scaling the workflow manually
+
+You can scale a workflow using any of the following methods:
+
+.Procedure: Scaling using the `kubectl scale` command
+
+. Run the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ *kubectl scale sonataflow _<workflow_name>_ -n _<namespace>_ --replicas=_<number>_*
+----
++
+where:
++
+`_<workflow_name>_`:: Specifies the name of your workflow.
+`_<namespace>_`:: Specifies the namespace where your workflow is deployed.
+`_<number>_`:: Specifies the desired number of replicas.
+
++
+.Example
+[source,terminal,subs="+quotes"]
+----
+$ *kubectl scale sonataflow example-workflow -n example-workflow-namespace --replicas=3*
+----
++
+.Example output
+[source,terminal]
+----
+sonataflow.sonataflow.org/example-workflow scaled
+----
+
+.Procedure: Scaling by configuring the `SonataFlow` custom resource
+
+. Edit your `SonataFlow` CR to include the `spec.podTemplate.replicas` field:
++
+[source,yaml]
+----
+apiVersion: sonataflow.org/v1alpha08
+kind: SonataFlow
+metadata:
+  name: example-workflow
+  namespace: example-workflow-namespace
+  annotations:
+    sonataflow.org/description: Example Workflow
+    sonataflow.org/version: 0.0.1
+    sonataflow.org/profile: preview
+spec:
+  podTemplate:
+    replicas: 3
+  flow:
+    start: ExampleStartState
+    # ... rest of workflow definition
+----
++
+Use the `spec.podTemplate.replicas` field to configure the number of replicas.
+
+. Apply the configuration:
++
+[source,terminal,subs="+quotes"]
+----
+$ *kubectl apply -f example-workflow.yaml -n example-workflow-namespace*
+----
++
+.Example output
+[source,terminal]
+----
+sonataflow.sonataflow.org/example-workflow configured
+----
+
+.Procedure: Scaling by patching the `SonataFlow` custom resource
+
+. Run the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ *kubectl patch sonataflow _<workflow_name>_ -n _<namespace>_ \
+  --type merge \
+  -p '{
+    "spec": {
+      "podTemplate": {
+        "replicas": _<number>_
+      }
+    }
+  }'*
+----
++
+where:
++
+`_<workflow_name>_`:: Specifies the name of your workflow.
+`_<namespace>_`:: Specifies the namespace where your workflow is deployed.
+`_<number>_`:: Specifies the desired number of replicas.
+
++
+.Example
+[source,terminal,subs="+quotes"]
+----
+$ *kubectl patch sonataflow example-workflow -n example-workflow-namespace \
+  --type merge \
+  -p '{
+    "spec": {
+      "podTemplate": {
+        "replicas": 3
+      }
+    }
+  }'*
+----
++
+.Example output
+[source,terminal]
+----
+sonataflow.sonataflow.org/example-workflow patched
+----
+
+[id="workflow-horizontal-pod-autoscaling_{context}"]
+== Configuring horizontal pod autoscaling for workflows
+
+Before configuring a `HorizontalPodAutoscaler` for a workflow, you must define the resource requests that the autoscaler uses as metrics in the `SonataFlow` CR.
+
+.Prerequisites
+
+* You have installed the {ServerlessLogicOperatorName}.
+* You have deployed a workflow using the `preview` or `gitops` profile.
+
+.Procedure
+
+. Configure resource requests in your `SonataFlow` CR:
++
+[source,yaml]
+----
+apiVersion: sonataflow.org/v1alpha08
+kind: SonataFlow
+metadata:
+  name: example-workflow
+  namespace: example-workflow-namespace
+  annotations:
+    sonataflow.org/description: Example Workflow
+    sonataflow.org/version: 0.0.1
+    sonataflow.org/profile: preview
+spec:
+  podTemplate:
+    container:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+  flow:
+    start: ExampleStartState
+    # ... rest of workflow definition
+----
++
+This example configures the following resource settings:
++
+* The `spec.podTemplate.container` field supports most of the standard `PodSpec` configurations. For more information, see link:https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#Container[Container] in the Kubernetes documentation.
+* The `resources.requests.cpu` field specifies the CPU request for the workflow container.
+* The `resources.requests.memory` field specifies the memory request for the workflow container.
++
+[NOTE]
+====
+`HorizontalPodAutoscalers` use the request resources for metrics calculations. The resource limits in the example are illustrative and are not used for scaling decisions.
+====
+
+. Create a `HorizontalPodAutoscaler` CR:
++
+[source,yaml]
+----
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: example-autoscaler
+  namespace: example-workflow-namespace
+spec:
+  scaleTargetRef:
+    apiVersion: sonataflow.org/v1alpha08
+    kind: SonataFlow
+    name: example-workflow
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+----
++
+This configuration includes the following settings:
++
+* The `scaleTargetRef` field references the target workflow by specifying the `apiVersion`, `kind`, and `name`.
+* The `metrics` field defines a metric based on CPU resource utilization.
+
+. Apply the `HorizontalPodAutoscaler` configuration:
++
+[source,terminal,subs="+quotes"]
+----
+$ *kubectl apply -f example-autoscaler.yaml -n example-workflow-namespace*
+----
+
+[IMPORTANT]
+====
+Workflows deployed with `spec.podTemplate.deploymentModel: knative` cannot be scaled using a `HorizontalPodAutoscaler` because Knative Serving controls the number of replicas automatically.
+====
+
+.Additional resources
+
+* link:https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/[Horizontal Pod Autoscaling] in the Kubernetes documentation
